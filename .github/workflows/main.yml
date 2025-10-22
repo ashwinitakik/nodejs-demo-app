@@ -1,0 +1,63 @@
+name: CI/CD Pipeline for Node.js App
+
+on:
+  push:
+    branches: [ main ]  # Triggers on push to main
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest  # GitHub's free Linux VM
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3  # Clones your repo
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+        cache: 'npm'
+        cache-dependency-path: 'app/package-lock.json'  # FIXED: Looks in app/ for lock file
+
+    - name: Install dependencies
+      run: cd app && npm install  # Installs in app/ subdir
+
+    - name: Run tests
+      run: cd app && npm test  # Runs your placeholder test
+
+    - name: Build Docker image
+      run: docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:${{ github.sha }} .  # Builds from root, tags with commit SHA
+
+    - name: Login to DockerHub
+      uses: docker/login-action@v2
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Push Docker image to DockerHub
+      run: |
+        docker tag ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:latest
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:${{ github.sha }}
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:latest
+
+  deploy:
+    needs: test-and-build  # Only runs if build succeeds
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'  # Only on main branch
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Deploy to EC2 via SSH
+      uses: appleboy/ssh-action@v0.1.5  # Free action for SSH
+      with:
+        host: ${{ secrets.EC2_HOST }}  # Your EC2 IP
+        username: ec2-user
+        key: ${{ secrets.EC2_SSH_KEY }}  # Your PEM private key
+        script: |  # Commands run on EC2
+          docker pull ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:latest
+          docker stop nodejs-app || true  # Ignore if not running
+          docker rm nodejs-app || true
+          docker run -d --name nodejs-app -p 80:3000 ${{ secrets.DOCKERHUB_USERNAME }}/nodejs-demo-app:latest
+          echo "Deployment complete!"
